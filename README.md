@@ -1,6 +1,8 @@
 # synctodisk
 
-A CLI tool that syncs behavior trees from a Roblox DataStore to your local filesystem as JSON files. Built with [Lune](https://github.com/filiptibell/lune) and compiled into standalone executables.
+A CLI tool that syncs Roblox Studio ModuleScripts to disk in real time via a WebSocket connection and a Rojo sourcemap. Built with [Lune](https://github.com/filiptibell/lune) and compiled into standalone executables.
+
+When running, `synctodisk` starts a local WebSocket server. A companion Roblox Studio plugin sends `sync` and `delete` messages as you edit behavior-tree ModuleScripts in Studio; `synctodisk` writes or removes the corresponding files on disk, keeping your Rojo project in sync.
 
 ## Installation
 
@@ -26,7 +28,7 @@ synctodisk [CONFIG] [OPTIONS]
 
 | Argument | Description |
 |----------|-------------|
-| `[CONFIG]` | Path to the TOML config file. Defaults to `synctodisk.toml` in the current directory. |
+| `[CONFIG]` | Path to the JSON config file. Defaults to `btree-sync.config.json` in the current directory. |
 
 ### Options
 
@@ -34,63 +36,67 @@ synctodisk [CONFIG] [OPTIONS]
 |--------|-------------|
 | `-h`, `--help` | Print usage information |
 | `-v`, `--version` | Print version information |
-| `-w`, `--watch` | Continuously poll the DataStore and sync on an interval |
-| `-q`, `--quiet` | Suppress all output |
 
 ### Examples
 
-Sync once using the default config file in the current directory:
+Start the server using the default config in the current directory:
 ```sh
 synctodisk
 ```
 
-Sync once using a specific config file:
+Start the server using a specific config file:
 ```sh
-synctodisk path/to/my-config.toml
-```
-
-Watch mode — poll every N seconds and re-sync whenever new trees appear:
-```sh
-synctodisk --watch
-synctodisk my-config.toml --watch
+synctodisk path/to/my-config.json
 ```
 
 ## Config File
 
-`synctodisk` is configured through a [TOML](https://toml.io) file. By default it looks for `synctodisk.toml` in the current working directory, but you can pass any path on the command line.
+`synctodisk` is configured through a JSON file. By default it looks for `btree-sync.config.json` in the current working directory.
 
 ### Required Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `universe_id` | integer | The **Universe ID** of your Roblox experience. Found on the [Creator Dashboard](https://create.roblox.com/dashboard/creations) under the experience settings. |
-| `place_id` | integer | The **Place ID** of the starting place in your experience. |
-| `api_key` | string | A Roblox **Open Cloud API key** with `DataStore` read permissions for the target universe. Create one at [create.roblox.com/credentials](https://create.roblox.com/credentials). |
+| `watchedPaths` | `string[]` | One or more DataModel paths (e.g. `"ServerScriptService.MyGame.Trees"`). Only instances that are equal to or descendants of a watched path will be synced to disk. |
 
 ### Optional Fields
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `output` | string | `"trees"` | Local directory where synced behavior tree JSON files are written. Created automatically if it does not exist. |
-| `datastore` | string | `"BehaviorTrees"` | Name of the Roblox DataStore that contains the behavior tree entries. |
-| `poll_interval` | integer | `5` | How often (in seconds) to re-sync when running in `--watch` mode. |
+| `port` | number | `34876` | The local port the WebSocket server listens on. The Studio plugin must connect to the same port. |
+| `sourcemapPath` | string | `"sourcemap.json"` | Path to the Rojo-generated sourcemap that maps DataModel paths to file paths on disk. Keep `rojo sourcemap --watch` running alongside `synctodisk` so this stays up to date. |
+| `luaurcPath` | string | `".luaurc"` | Path to the project's `.luaurc` file. When present, `synctodisk` rewrites bare `require("some/path")` calls to `require("@alias/...")` using the aliases defined there. |
 
 ### Example Config
 
-```toml
-# synctodisk.toml
-
-universe_id   = 12345678       # Your Roblox Universe ID
-place_id      = 87654321       # Your starting Place ID
-api_key       = "your-open-cloud-api-key"
-
-# Optional
-output        = "trees"        # Output directory (default: "trees")
-datastore     = "BehaviorTrees" # DataStore name (default: "BehaviorTrees")
-poll_interval = 10             # Seconds between syncs in watch mode (default: 5)
+```json
+{
+  "watchedPaths": [
+    "ServerScriptService.MyGame.Trees",
+    "ReplicatedStorage.SharedTrees"
+  ],
+  "port": 34876,
+  "sourcemapPath": "sourcemap.json",
+  "luaurcPath": ".luaurc"
+}
 ```
 
-Each DataStore entry is written to `<output>/<key>.json`. Any characters in the key that are not alphanumeric, hyphens, or underscores are replaced with `_`.
+A minimal config only needs `watchedPaths`:
+
+```json
+{
+  "watchedPaths": ["ServerScriptService.MyGame.Trees"]
+}
+```
+
+## Typical Workflow
+
+1. In your Rojo project root, create `btree-sync.config.json` with the paths you want to sync.
+2. Run `rojo sourcemap --watch` (or `rojo sourcemap`) to generate / keep `sourcemap.json` current.
+3. Run `synctodisk` (or `synctodisk path/to/btree-sync.config.json`).
+4. Open Roblox Studio with the companion plugin active. The plugin connects to `ws://localhost:34876`.
+5. Edit behavior-tree ModuleScripts in Studio — changes are written to disk automatically.
+6. Press **Ctrl+C** to stop the server.
 
 ## Building from Source
 
@@ -118,3 +124,4 @@ This prompts for a new semver version string, then updates `build/.darklua.json`
 1. Run `lune run bump` and commit the version change.
 2. Create and publish a new GitHub Release with a semver tag (e.g. `v0.2.0`).
 3. The `release.yml` workflow automatically builds all platform binaries and uploads them as release assets.
+

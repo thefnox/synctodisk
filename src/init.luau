@@ -1,192 +1,48 @@
 --!strict
 --!optimize 2
 
----- Imports ----
+-- synctodisk: Syncs Roblox Studio ModuleScripts to disk via WebSocket + Rojo sourcemap.
+-- Run: synctodisk [CONFIG] [OPTIONS]
+--
+-- Requires btree-sync.config.json in the project root (or pass a custom path).
+-- Minimal example:
+--   { "watchedPaths": ["ServerScriptService.MyGame.Trees"] }
+-- Full options:
+--   {
+--     "watchedPaths": ["ServerScriptService.MyGame.Trees", "ReplicatedStorage.SharedTrees"],
+--     "port": 34876,
+--     "sourcemapPath": "sourcemap.json",
+--     "luaurcPath": ".luaurc"
+--   }
+-- Only DataModel paths that equal or are descendants of a watchedPath entry will be written.
 
-local fs = require("@lune/fs")
 local net = require("@lune/net")
-local process = require("@lune/process")
-local serde = require("@lune/serde")
-local stdio = require("@lune/stdio")
+local fs = require("@lune/fs")
 local task = require("@lune/task")
+local serde = require("@lune/serde")
+local process = require("@lune/process")
+local stdio = require("@lune/stdio")
 
----- Types ----
-
-type Config = {
-	place_id: number,
-	universe_id: number,
-	api_key: string,
-	output: string,
-	datastore: string?,
-	poll_interval: number?,
-}
-
----- Settings ----
+------------------------------------------------------------------------
+-- Version header
+------------------------------------------------------------------------
 
 local VERSION = (_G.VERSION or "DEBUG") :: string
-
-local DEFAULT_DATASTORE = "BehaviorTrees"
-local DEFAULT_POLL_INTERVAL = 5
-local DEFAULT_OUTPUT = "trees"
-local CONFIG_FILE = "synctodisk.toml"
-
-local OPEN_CLOUD_BASE = "https://apis.roblox.com/datastores/v1/universes"
-
----- Helpers ----
-
-local quiet = false
-
-local function Style(text: string, style: stdio.Style): string
-	return `{stdio.style(style)}{text}{stdio.style("reset")}`
-end
+local DEFAULT_CONFIG = "btree-sync.config.json"
 
 local function Color(text: string, color: stdio.Color): string
 	return `{stdio.color(color)}{text}{stdio.color("reset")}`
 end
 
-local function log(text: string)
-	if quiet then
-		return
-	end
-	print(`{Color("[synctodisk]", "cyan")} {text}`)
+local function Style(text: string, style: stdio.Style): string
+	return `{stdio.style(style)}{text}{stdio.style("reset")}`
 end
-
-local function err(text: string)
-	stdio.ewrite(`{Color("[synctodisk]", "red")} {Color("error:", "red")} {text}\n`)
-end
-
----- Config ----
-
-local function load_config(path: string): Config
-	if not fs.isFile(path) then
-		err(`Config file not found: {path}`)
-		err(`Create a {CONFIG_FILE} with the required fields. See README.md for details.`)
-		process.exit(1)
-	end
-
-	local contents = fs.readFile(path)
-	local ok, config = pcall(serde.decode, "toml" :: "toml", contents)
-	if not ok then
-		err(`Failed to parse config file: {config}`)
-		process.exit(1)
-	end
-
-	local cfg = config :: Config
-
-	if not cfg.place_id then
-		err("Config missing required field: place_id")
-		process.exit(1)
-	end
-
-	if not cfg.universe_id then
-		err("Config missing required field: universe_id")
-		process.exit(1)
-	end
-
-	if not cfg.api_key then
-		err("Config missing required field: api_key")
-		process.exit(1)
-	end
-
-	cfg.output = cfg.output or DEFAULT_OUTPUT
-	cfg.datastore = cfg.datastore or DEFAULT_DATASTORE
-	cfg.poll_interval = cfg.poll_interval or DEFAULT_POLL_INTERVAL
-
-	return cfg
-end
-
----- Sync ----
-
-local function fetch_datastore_keys(config: Config): { string }
-	local url =
-		`{OPEN_CLOUD_BASE}/{config.universe_id}/standard-datastores/datastore/entries?datastoreName={net.urlEncode(config.datastore or DEFAULT_DATASTORE)}`
-
-	local response = net.request({
-		url = url,
-		method = "GET",
-		headers = {
-			["x-api-key"] = config.api_key,
-		},
-	})
-
-	if not response.ok then
-		err(`Failed to list DataStore keys: HTTP {response.statusCode} – {response.body}`)
-		process.exit(1)
-	end
-
-	local ok, body = pcall(serde.decode, "json" :: "json", response.body)
-	if not ok then
-		err(`Failed to parse DataStore response: {body}`)
-		process.exit(1)
-	end
-
-	local keys: { string } = {}
-	for _, entry in (body :: any).keys or {} do
-		table.insert(keys, entry.key)
-	end
-	return keys
-end
-
-local function fetch_entry(config: Config, key: string): any
-	local url =
-		`{OPEN_CLOUD_BASE}/{config.universe_id}/standard-datastores/datastore/entries/entry?datastoreName={net.urlEncode(config.datastore or DEFAULT_DATASTORE)}&entryKey={net.urlEncode(key)}`
-
-	local response = net.request({
-		url = url,
-		method = "GET",
-		headers = {
-			["x-api-key"] = config.api_key,
-		},
-	})
-
-	if not response.ok then
-		err(`Failed to fetch entry '{key}': HTTP {response.statusCode} – {response.body}`)
-		return nil
-	end
-
-	local ok, data = pcall(serde.decode, "json" :: "json", response.body)
-	if not ok then
-		err(`Failed to parse entry '{key}': {data}`)
-		return nil
-	end
-
-	return data
-end
-
-local function sync_once(config: Config)
-	log(`Syncing behavior trees from DataStore '{config.datastore}'...`)
-
-	if not fs.isDir(config.output) then
-		fs.writeDir(config.output)
-	end
-
-	local keys = fetch_datastore_keys(config)
-
-	if #keys == 0 then
-		log("No behavior trees found in DataStore.")
-		return
-	end
-
-	local synced = 0
-	for _, key in keys do
-		local data = fetch_entry(config, key)
-		if data == nil then
-			continue
-		end
-
-		local safe_name = string.gsub(key, "[^%w%-_]", "_")
-		local out_path = `{config.output}/{safe_name}.json`
-		local encoded = serde.encode("json", data, true)
-		fs.writeFile(out_path, encoded)
-		synced += 1
-	end
-
-	log(`Synced {synced} behavior tree(s) to '{config.output}/'.`)
-end
-
----- Entry Point ----
 
 print(`{Color("synctodisk", "green")} {VERSION}`)
+
+------------------------------------------------------------------------
+-- CLI argument parsing
+------------------------------------------------------------------------
 
 local args = process.args
 
@@ -195,13 +51,11 @@ local function print_usage()
 	print("\tsynctodisk [CONFIG] [OPTIONS]")
 	print("")
 	print(Color(Style("ARGUMENTS:", "bold"), "yellow"))
-	print(`\t{stdio.color("cyan")}[CONFIG]{stdio.color("reset")}\t\tPath to config file (default: {CONFIG_FILE})`)
+	print(`\t{stdio.color("cyan")}[CONFIG]{stdio.color("reset")}\t\tPath to JSON config file (default: {DEFAULT_CONFIG})`)
 	print("")
 	print(Color(Style("OPTIONS:", "bold"), "yellow"))
 	print(`\t{stdio.color("green")}-h, --help{stdio.color("reset")}\t\tPrint this help message`)
 	print(`\t{stdio.color("green")}-v, --version{stdio.color("reset")}\t\tPrint version information`)
-	print(`\t{stdio.color("green")}-w, --watch{stdio.color("reset")}\t\tContinuously poll and sync on an interval`)
-	print(`\t{stdio.color("green")}-q, --quiet{stdio.color("reset")}\t\tSuppress output`)
 end
 
 if table.find(args, "-h") or table.find(args, "--help") then
@@ -213,30 +67,527 @@ if table.find(args, "-v") or table.find(args, "--version") then
 	return
 end
 
-local config_path = CONFIG_FILE
+local configPath = DEFAULT_CONFIG
 for _, arg in args do
 	if string.sub(arg, 1, 1) ~= "-" then
-		config_path = arg
+		configPath = arg
 		break
 	end
 end
 
-local watch_mode = table.find(args, "-w") ~= nil or table.find(args, "--watch") ~= nil
-local quiet_mode = table.find(args, "-q") ~= nil or table.find(args, "--quiet") ~= nil
+------------------------------------------------------------------------
+-- Types
+------------------------------------------------------------------------
 
-if quiet_mode then
-	quiet = true
+type Config = {
+	watchedPaths: { string }, -- required: DataModel paths the tool is allowed to write under
+	port: number,
+	sourcemapPath: string,
+	luaurcPath: string,
+}
+
+type SourcemapNode = {
+	name: string,
+	className: string,
+	filePaths: { string }?,
+	children: { SourcemapNode }?,
+}
+
+type AliasEntry = { name: string, root: string }
+
+type Ack = {
+	type: string,
+	success: boolean,
+	message: string,
+}
+
+------------------------------------------------------------------------
+-- Config
+------------------------------------------------------------------------
+
+local readOk, rawOrErr = pcall(fs.readFile, configPath)
+if not readOk then
+	print(`[synctodisk] ERROR: {configPath} not found: {rawOrErr}`)
+	print("[synctodisk] Create btree-sync.config.json with at least:")
+	print('  { "watchedPaths": ["ServerScriptService.MyGame.Trees"] }')
+	process.exit(1)
 end
 
-local config = load_config(config_path)
+local configRaw = rawOrErr :: string
 
-if watch_mode then
-	log(`Watch mode enabled. Polling every {config.poll_interval}s...`)
-	log("Press Ctrl+C to stop.")
-	while true do
-		sync_once(config)
-		task.wait(config.poll_interval or DEFAULT_POLL_INTERVAL)
+local parseOk, parsed = pcall(function()
+	return serde.decode("json", configRaw)
+end)
+if not parseOk or type(parsed) ~= "table" then
+	print(`[synctodisk] ERROR: {configPath} is not valid JSON: {parsed}`)
+	process.exit(1)
+end
+
+local p = parsed :: { [string]: unknown }
+
+if type(p.watchedPaths) ~= "table" or #(p.watchedPaths :: { unknown }) == 0 then
+	print("[synctodisk] ERROR: config must contain a non-empty 'watchedPaths' array.")
+	print('  Example: { "watchedPaths": ["ServerScriptService.MyGame.Trees"] }')
+	process.exit(1)
+end
+
+local watchedPaths: { string } = {}
+for _, v in p.watchedPaths :: { unknown } do
+	if type(v) == "string" then
+		table.insert(watchedPaths, v :: string)
 	end
-else
-	sync_once(config)
 end
+
+local config: Config = {
+	watchedPaths = watchedPaths,
+	port = if type(p.port) == "number" then p.port :: number else 34876,
+	sourcemapPath = if type(p.sourcemapPath) == "string" then p.sourcemapPath :: string else "sourcemap.json",
+	luaurcPath = if type(p.luaurcPath) == "string" then p.luaurcPath :: string else ".luaurc",
+}
+
+print(`[synctodisk] Loaded {configPath}`)
+print(`[synctodisk] Watching {#config.watchedPaths} path(s):`)
+for _, wp in config.watchedPaths do
+	print(`[synctodisk]   • {wp}`)
+end
+
+------------------------------------------------------------------------
+-- Sourcemap index: DataModel path -> file path on disk
+------------------------------------------------------------------------
+
+local function buildIndex(node: SourcemapNode, parentPath: string, index: { [string]: string })
+	-- The DataModel root node (className == "DataModel") has a project name
+	-- like "btree" that does NOT appear in Instance:GetFullName() output.
+	-- We skip its name so children map directly to service names.
+	local myPath: string
+	if node.className == "DataModel" then
+		myPath = ""
+	elseif parentPath == "" then
+		myPath = node.name
+	else
+		myPath = parentPath .. "." .. node.name
+	end
+
+	local filePaths = node.filePaths or {}
+	if #filePaths > 0 and myPath ~= "" then
+		index[myPath] = filePaths[1]
+	end
+
+	for _, child in node.children or {} do
+		buildIndex(child, myPath, index)
+	end
+end
+
+local function loadSourcemapIndex(path: string): { [string]: string }
+	local index: { [string]: string } = {}
+	local ok, raw = pcall(fs.readFile, path)
+	if not ok then
+		print(`[synctodisk] WARNING: Cannot read sourcemap '{path}': {raw}`)
+		return index
+	end
+	local smParseOk, sm = pcall(serde.decode, "json", raw :: string)
+	if not smParseOk then
+		print(`[synctodisk] WARNING: Failed to parse sourcemap JSON: {sm}`)
+		return index
+	end
+	buildIndex(sm :: SourcemapNode, "", index)
+	return index
+end
+
+local function countEntries(t: { [string]: string }): number
+	local n = 0
+	for _ in t do
+		n += 1
+	end
+	return n
+end
+
+------------------------------------------------------------------------
+-- .luaurc alias loading
+------------------------------------------------------------------------
+
+local function loadAliases(path: string): { [string]: string }
+	local aliases: { [string]: string } = {}
+	local ok, raw = pcall(fs.readFile, path)
+	if not ok then
+		return aliases
+	end
+	local rcParseOk, rc = pcall(serde.decode, "json", raw :: string)
+	if not rcParseOk or type(rc) ~= "table" then
+		return aliases
+	end
+	local rcTable = rc :: { [string]: unknown }
+	if type(rcTable.aliases) ~= "table" then
+		return aliases
+	end
+	for name, root in rcTable.aliases :: { [string]: string } do
+		-- Skip the lune type definition alias — only useful for type checking, not runtime paths.
+		if name == "lune" then
+			continue
+		end
+		local normalized = tostring(root):gsub("\\", "/")
+		if normalized:sub(-1) ~= "/" then
+			normalized ..= "/"
+		end
+		aliases[name] = normalized
+	end
+	return aliases
+end
+
+-- Sorted longest-root-first to prevent short prefix from matching before long one.
+local function buildAliasList(aliases: { [string]: string }): { AliasEntry }
+	local list: { AliasEntry } = {}
+	for name, root in aliases do
+		table.insert(list, { name = name, root = root })
+	end
+	table.sort(list, function(a, b)
+		return #a.root > #b.root
+	end)
+	return list
+end
+
+------------------------------------------------------------------------
+-- require() rewriting
+-- Rewrites require("some/bare/path") -> require("@alias/...") when the
+-- bare path starts with a known .luaurc alias root.
+-- Leaves require(script.X), require("@alias/...") untouched.
+------------------------------------------------------------------------
+
+local function rewriteRequires(source: string, aliasList: { AliasEntry }): string
+	if #aliasList == 0 then
+		return source
+	end
+	-- Only match string requires that don't already start with @
+	return (source:gsub('require%s*%(%s*"([^@][^"]*)"', function(path: string): string
+		for _, entry in aliasList do
+			if path:sub(1, #entry.root) == entry.root then
+				return `require("@{entry.name}/{path:sub(#entry.root + 1)}")`
+			end
+		end
+		return `require("{path}")`
+	end))
+end
+
+------------------------------------------------------------------------
+-- Filesystem helpers
+------------------------------------------------------------------------
+
+-- Creates all directory segments in path, tolerating already-existing dirs.
+local function mkdirp(path: string)
+	local normalized = path:gsub("\\", "/")
+	local current = ""
+	for segment in normalized:gmatch("[^/]+") do
+		current = if current == "" then segment else current .. "/" .. segment
+		if not fs.isDir(current) then
+			local ok, err = pcall(fs.writeDir, current)
+			if not ok and not fs.isDir(current) then
+				error(`mkdirp: failed at '{current}': {err}`)
+			end
+		end
+	end
+end
+
+------------------------------------------------------------------------
+-- Sync message handler
+------------------------------------------------------------------------
+
+type SyncMessage = {
+	dmPath: string,
+	source: string?,
+	instanceType: string,
+}
+
+-- Returns true if dmPath equals a watched path or is a descendant of one.
+local function isUnderWatchedPath(dmPath: string, watched: { string }): boolean
+	for _, watchedEntry in watched do
+		if dmPath == watchedEntry or dmPath:sub(1, #watchedEntry + 1) == watchedEntry .. "." then
+			return true
+		end
+	end
+	return false
+end
+
+------------------------------------------------------------------------
+-- Path derivation for instances not yet in the sourcemap
+-- (e.g. a task module created in Studio before sourcemap:watch catches up)
+------------------------------------------------------------------------
+
+-- Walks up the DataModel path hierarchy to find the nearest ancestor that IS
+-- in the sourcemap, then extends its file path with the remaining name segments.
+-- Returns the derived file path and true, or nil and false if not possible.
+local function deriveFilePath(dmPath: string, index: { [string]: string }): (string?, boolean)
+	local segments: { string } = {}
+	for seg in dmPath:gmatch("[^.]+") do
+		table.insert(segments, seg)
+	end
+
+	for i = #segments - 1, 1, -1 do
+		local ancestorPath = table.concat(segments, ".", 1, i)
+		local ancestorFile = index[ancestorPath]
+		if ancestorFile then
+			-- Determine the base directory where children of this ancestor live.
+			local baseDir: string
+			if ancestorFile:match("/init%.luau?$") then
+				-- Folder-style module: src/foo/init.luau → children at src/foo/
+				baseDir = ancestorFile:match("^(.*)/init%.luau?$") :: string
+			elseif ancestorFile:match("%.luau?$") then
+				-- Single-file module: src/foo.luau → children would go in src/foo/
+				-- (Rojo will eventually promote foo.luau → foo/init.luau automatically
+				-- once it sees a sibling file; we write optimistically here.)
+				baseDir = ancestorFile:match("^(.-)%.luau?$") :: string
+			else
+				-- Plain directory entry
+				baseDir = ancestorFile:gsub("/$", "")
+			end
+
+			-- Append any intermediate path segments as subdirectories, final segment as .luau
+			local remaining: { string } = {}
+			for j = i + 1, #segments do
+				table.insert(remaining, segments[j])
+			end
+
+			local derived = baseDir
+			for j = 1, #remaining - 1 do
+				derived ..= "/" .. remaining[j]
+			end
+			derived ..= "/" .. remaining[#remaining] .. ".luau"
+
+			return derived, true
+		end
+	end
+
+	return nil, false
+end
+
+------------------------------------------------------------------------
+-- Sync handler
+------------------------------------------------------------------------
+
+local function handleSync(
+	msg: SyncMessage,
+	index: { [string]: string },
+	aliasList: { AliasEntry },
+	watched: { string }
+): Ack
+	local dmPath = msg.dmPath or ""
+	local instanceType = msg.instanceType or ""
+	local source = msg.source or ""
+
+	if not isUnderWatchedPath(dmPath, watched) then
+		return {
+			type = "ack",
+			success = false,
+			message = `Blocked: '{dmPath}' is not under a watched path`,
+		}
+	end
+
+	if instanceType ~= "ModuleScript" and instanceType ~= "Folder" then
+		return {
+			type = "ack",
+			success = false,
+			message = `Skipped: instanceType '{instanceType}' is not ModuleScript or Folder`,
+		}
+	end
+
+	-- Look up path in sourcemap; fall back to derivation for brand-new instances
+	-- (ones created in Studio before sourcemap:watch has had a chance to regenerate).
+	local filePath = index[dmPath]
+	local derived = false
+	if not filePath then
+		local dp, ok = deriveFilePath(dmPath, index)
+		if not ok or not dp then
+			return {
+				type = "ack",
+				success = false,
+				message = `No sourcemap entry for '{dmPath}' and cannot derive path from parent`,
+			}
+		end
+		filePath = dp
+		derived = true
+	end
+
+	local tag = if derived then " (derived)" else ""
+
+	if instanceType == "Folder" then
+		local ok, err = pcall(mkdirp, filePath)
+		if not ok then
+			return {
+				type = "ack",
+				success = false,
+				message = `Could not create directory '{filePath}': {err}`,
+			}
+		end
+		return { type = "ack", success = true, message = `Dir OK: {filePath}{tag}` }
+	end
+
+	-- ModuleScript: rewrite requires, ensure parent dir, write file.
+	local rewritten = rewriteRequires(source, aliasList)
+	local parentDir = filePath:match("^(.*)/[^/]*$")
+	if parentDir and parentDir ~= "" then
+		local dirOk, dirErr = pcall(mkdirp, parentDir)
+		if not dirOk then
+			return {
+				type = "ack",
+				success = false,
+				message = `Could not create parent directory: {dirErr}`,
+			}
+		end
+	end
+
+	local writeOk, writeErr = pcall(fs.writeFile, filePath, rewritten)
+	if not writeOk then
+		return {
+			type = "ack",
+			success = false,
+			message = `Write failed for '{filePath}': {writeErr}`,
+		}
+	end
+
+	return { type = "ack", success = true, message = `Wrote: {filePath}{tag}` }
+end
+
+------------------------------------------------------------------------
+-- Delete handler
+------------------------------------------------------------------------
+
+local function handleDelete(
+	dmPath: string,
+	index: { [string]: string },
+	watched: { string }
+): Ack
+	if not isUnderWatchedPath(dmPath, watched) then
+		return {
+			type = "ack",
+			success = false,
+			message = `Blocked: '{dmPath}' is not under a watched path`,
+		}
+	end
+
+	-- Prefer the sourcemap entry; fall back to derivation for files that were
+	-- written optimistically before the sourcemap was regenerated.
+	local filePath = index[dmPath]
+	if not filePath then
+		local dp, ok = deriveFilePath(dmPath, index)
+		if not ok or not dp then
+			return { type = "ack", success = true, message = `No entry for '{dmPath}', nothing to delete` }
+		end
+		filePath = dp
+	end
+
+	if fs.isFile(filePath) then
+		local ok, err = pcall(fs.removeFile, filePath)
+		if not ok then
+			return { type = "ack", success = false, message = `Delete failed for '{filePath}': {err}` }
+		end
+		return { type = "ack", success = true, message = `Deleted: {filePath}` }
+	elseif fs.isDir(filePath) then
+		local ok, err = pcall(fs.removeDir, filePath)
+		if not ok then
+			return { type = "ack", success = false, message = `Delete dir failed for '{filePath}': {err}` }
+		end
+		return { type = "ack", success = true, message = `Deleted dir: {filePath}` }
+	else
+		return { type = "ack", success = true, message = `Not on disk: '{filePath}', nothing to delete` }
+	end
+end
+
+------------------------------------------------------------------------
+-- State: live sourcemap index and alias list (hot-reloaded on change)
+------------------------------------------------------------------------
+
+local indexRef: { value: { [string]: string } } = { value = loadSourcemapIndex(config.sourcemapPath) }
+local aliasesRef: { value: { [string]: string } } = { value = loadAliases(config.luaurcPath) }
+
+print(`[synctodisk] Sourcemap: {countEntries(indexRef.value)} entries`)
+print(`[synctodisk] Aliases  : {countEntries(aliasesRef.value)} active`)
+
+-- Watch sourcemap for changes (poll every 2 seconds).
+-- Also reloads aliases in case .luaurc was edited.
+local lastSourcemapContent = ""
+task.spawn(function()
+	while true do
+		task.wait(2)
+		local ok, raw = pcall(fs.readFile, config.sourcemapPath)
+		if ok and raw ~= lastSourcemapContent then
+			lastSourcemapContent = raw :: string
+			local smParseOk, sm = pcall(serde.decode, "json", raw :: string)
+			if smParseOk then
+				local newIndex: { [string]: string } = {}
+				buildIndex(sm :: SourcemapNode, "", newIndex)
+				indexRef.value = newIndex
+				aliasesRef.value = loadAliases(config.luaurcPath)
+				print(`[synctodisk] Sourcemap reloaded: {countEntries(newIndex)} entries`)
+			end
+		end
+	end
+end)
+
+------------------------------------------------------------------------
+-- WebSocket server
+------------------------------------------------------------------------
+
+local function encode(value: { [string]: unknown }): string
+	return serde.encode("json", value)
+end
+
+local startOk, startErr = pcall(function()
+	net.serve(config.port, {
+		handleWebSocket = function(socket)
+			print("[synctodisk] Client connected")
+
+			while true do
+				local msg = socket.next()
+				if msg == nil then
+					break
+				end
+
+				local decodeOk, decoded = pcall(serde.decode, "json", msg :: string)
+				if not decodeOk then
+					socket.send(encode({ type = "ack", success = false, message = "Invalid JSON" }))
+					continue
+				end
+
+				local d = decoded :: { [string]: unknown }
+				local msgType = tostring(d.type or "")
+
+				if msgType == "ping" then
+					socket.send(encode({ type = "pong" }))
+
+				elseif msgType == "sync" then
+					local aliasList = buildAliasList(aliasesRef.value)
+					local syncMsg: SyncMessage = {
+						dmPath = tostring(d.dmPath or ""),
+						source = if type(d.source) == "string" then d.source :: string else "",
+						instanceType = tostring(d.instanceType or ""),
+					}
+					local ack = handleSync(syncMsg, indexRef.value, aliasList, config.watchedPaths)
+					socket.send(encode(ack :: { [string]: unknown }))
+					local icon = if ack.success then "✓" else "✗"
+					print(`[synctodisk] {icon} {ack.message}`)
+
+				elseif msgType == "delete" then
+					local ack =
+						handleDelete(tostring(d.dmPath or ""), indexRef.value, config.watchedPaths)
+					socket.send(encode(ack :: { [string]: unknown }))
+					local icon = if ack.success then "✓" else "✗"
+					print(`[synctodisk] {icon} {ack.message}`)
+
+				elseif msgType == "disconnect" then
+					socket.send(encode({ type = "ack", success = true, message = "Bye" }))
+					break
+				end
+			end
+
+			print("[synctodisk] Client disconnected")
+		end,
+	})
+end)
+
+if not startOk then
+	print(`[synctodisk] ERROR: Failed to start server: {startErr}`)
+	print(`[synctodisk] Is port {config.port} already in use?`)
+	process.exit(1)
+end
+
+print(`[synctodisk] Listening on ws://localhost:{config.port}  (Ctrl+C to stop)`)
+
