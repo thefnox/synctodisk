@@ -1,0 +1,40 @@
+name: Release
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup rokit
+        uses: CompeyDev/setup-rokit@v0.1.0
+
+      - name: Build binaries
+        run: lune run build
+
+      - name: linux-aarch64
+        run: gh release upload ${{ github.event.release.tag_name }} release/synctodisk-linux-aarch64.tar.xz
+
+      - name: linux-x86_64
+        run: gh release upload ${{ github.event.release.tag_name }} release/synctodisk-linux-x86_64.tar.xz
+
+      - name: macos-aarch64
+        run: gh release upload ${{ github.event.release.tag_name }} release/synctodisk-macos-aarch64.tar.xz
+
+      - name: macos-x86_64
+        run: gh release upload ${{ github.event.release.tag_name }} release/synctodisk-macos-x86_64.tar.xz
+
+      - name: windows-x86_64
+        run: gh release upload ${{ github.event.release.tag_name }} release/synctodisk-windows-x86_64.tar.gz
