@@ -28,8 +28,10 @@ local buildIndex = lib.buildIndex
 local countEntries = lib.countEntries
 local buildAliasList = lib.buildAliasList
 local rewriteRequires = lib.rewriteRequires
+local rewriteInstanceRequires = lib.rewriteInstanceRequires
 local isUnderWatchedPath = lib.isUnderWatchedPath
 local deriveFilePath = lib.deriveFilePath
+local folderPathFromFilePath = lib.folderPathFromFilePath
 
 ------------------------------------------------------------------------
 -- Version header
@@ -283,19 +285,34 @@ local function handleSync(
 	local tag = if derived then " (derived)" else ""
 
 	if instanceType == "Folder" then
-		local ok, err = pcall(mkdirp, filePath)
+		-- deriveFilePath always appends .luau; resolve the actual directory path.
+		local dir = folderPathFromFilePath(filePath)
+		local ok, err = pcall(mkdirp, dir)
 		if not ok then
 			return {
 				type = "ack",
 				success = false,
-				message = `Could not create directory '{filePath}': {err}`,
+				message = `Could not create directory '{dir}': {err}`,
 			}
 		end
-		return { type = "ack", success = true, message = `Dir OK: {filePath}{tag}` }
+		return { type = "ack", success = true, message = `Dir OK: {dir}{tag}` }
 	end
 
-	-- ModuleScript: rewrite requires, ensure parent dir, write file.
+	-- ModuleScript: if a same-name directory already exists (Rojo folder-style
+	-- module layout), write to stem/init.luau and remove the stale flat file.
+	if not filePath:match("/init%.luau?$") then
+		local stem = filePath:match("^(.-)%.luau?$")
+		if stem and fs.isDir(stem) then
+			if fs.isFile(filePath) then
+				pcall(fs.removeFile, filePath)
+			end
+			filePath = stem .. "/init.luau"
+		end
+	end
+
+	-- Rewrite both file-path and instance-path requires.
 	local rewritten = rewriteRequires(source, aliasList)
+	rewritten = rewriteInstanceRequires(rewritten, index, aliasList)
 	local parentDir = filePath:match("^(.*)/[^/]*$")
 	if parentDir and parentDir ~= "" then
 		local dirOk, dirErr = pcall(mkdirp, parentDir)

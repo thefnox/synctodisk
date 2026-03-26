@@ -170,12 +170,71 @@ local function deriveFilePath(dmPath: string, index: { [string]: string }): (str
 end
 
 ------------------------------------------------------------------------
+-- Folder path resolution
+------------------------------------------------------------------------
+
+-- Given any file path that deriveFilePath or the sourcemap index may produce,
+-- return the corresponding *directory* path for a Folder instance:
+--   stem/init.lua[u]  →  stem       (folder-style module)
+--   stem.lua[u]       →  stem       (derived path — strip extension)
+--   anything else     →  as-is (trailing slash stripped)
+local function folderPathFromFilePath(filePath: string): string
+	if filePath:match("/init%.luau?$") then
+		return filePath:match("^(.*)/init%.luau?$") :: string
+	elseif filePath:match("%.luau?$") then
+		return filePath:match("^(.-)%.luau?$") :: string
+	else
+		return filePath:gsub("/$", "")
+	end
+end
+
+------------------------------------------------------------------------
+-- Instance-path require rewriter
+------------------------------------------------------------------------
+
+-- Rewrites Roblox instance-path requires emitted by Studio plugins:
+--   require([[@game/ServerScriptService/Foo/bar]])
+-- Looks the DataModel path up in the sourcemap index, strips the file
+-- extension (and /init suffix), then applies alias rewriting identical
+-- to rewriteRequires.  Leaves the call unchanged if the path is not
+-- found in the index.
+local function rewriteInstanceRequires(
+	source: string,
+	index: { [string]: string },
+	aliasList: { AliasEntry }
+): string
+	return source:gsub(
+		"require%s*%(%s*%[%[@game/([^%]]+)%]%]%s*%)",
+		function(instancePath: string): string
+			local dmPath = instancePath:gsub("/", ".")
+			local filePath = index[dmPath]
+			if not filePath then
+				return `require([[@game/{instancePath}]])`
+			end
+			-- Strip /init suffix and file extension to get the require path
+			local requirePath = filePath:match("^(.*)/init%.luau?$")
+				or filePath:match("^(.-)%.luau?$")
+				or filePath
+			-- Apply alias rewriting (longest root first — caller must pre-sort)
+			for _, entry in aliasList do
+				if requirePath:sub(1, #entry.root) == entry.root then
+					return `require("@{entry.name}/{requirePath:sub(#entry.root + 1)}")`
+				end
+			end
+			return `require("{requirePath}")`
+		end
+	)
+end
+
+------------------------------------------------------------------------
 
 return {
 	buildIndex = buildIndex,
 	countEntries = countEntries,
 	buildAliasList = buildAliasList,
 	rewriteRequires = rewriteRequires,
+	rewriteInstanceRequires = rewriteInstanceRequires,
 	isUnderWatchedPath = isUnderWatchedPath,
 	deriveFilePath = deriveFilePath,
+	folderPathFromFilePath = folderPathFromFilePath,
 }

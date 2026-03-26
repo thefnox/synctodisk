@@ -9,6 +9,8 @@ local buildAliasList = lib.buildAliasList
 local rewriteRequires = lib.rewriteRequires
 local isUnderWatchedPath = lib.isUnderWatchedPath
 local deriveFilePath = lib.deriveFilePath
+local folderPathFromFilePath = lib.folderPathFromFilePath
+local rewriteInstanceRequires = lib.rewriteInstanceRequires
 
 ------------------------------------------------------------------------
 -- buildIndex
@@ -437,4 +439,100 @@ describe("deriveFilePath", function()
 		expect(path).toBe("places/game/server/behavior/trees/Animal.luau")
 	end)
 
+end)
+
+------------------------------------------------------------------------
+-- folderPathFromFilePath
+------------------------------------------------------------------------
+
+describe("folderPathFromFilePath", function()
+	test("plain directory path returned unchanged", function()
+		expect(folderPathFromFilePath("src/Foo/Bar")).toBe("src/Foo/Bar")
+	end)
+
+	test("trailing slash stripped from plain directory", function()
+		expect(folderPathFromFilePath("src/Foo/Bar/")).toBe("src/Foo/Bar")
+	end)
+
+	test(".luau extension stripped", function()
+		expect(folderPathFromFilePath("src/Foo/Bar.luau")).toBe("src/Foo/Bar")
+	end)
+
+	test(".lua extension stripped", function()
+		expect(folderPathFromFilePath("src/Foo/Bar.lua")).toBe("src/Foo/Bar")
+	end)
+
+	test("init.luau returns parent directory", function()
+		expect(folderPathFromFilePath("src/Foo/Bar/init.luau")).toBe("src/Foo/Bar")
+	end)
+
+	test("init.lua returns parent directory", function()
+		expect(folderPathFromFilePath("src/Foo/Bar/init.lua")).toBe("src/Foo/Bar")
+	end)
+
+	test("derived .luau path from deep tree gives correct dir", function()
+		expect(folderPathFromFilePath("places/game/server/behavior/trees/Animal.luau")).toBe(
+			"places/game/server/behavior/trees/Animal"
+		)
+	end)
+end)
+
+------------------------------------------------------------------------
+-- rewriteInstanceRequires
+------------------------------------------------------------------------
+
+describe("rewriteInstanceRequires", function()
+	local aliases = {
+		{ name = "Game", root = "places/game/" },
+		{ name = "Common", root = "places/common/" },
+	}
+
+	test("path found in index with alias match is rewritten", function()
+		local index = {
+			["ServerScriptService.Game_Server.behavior.tasks.randomWait"] = "places/game/server/behavior/tasks/randomWait.lua",
+		}
+		local src = "BT.task(require([[@game/ServerScriptService/Game_Server/behavior/tasks/randomWait]]), nil, {})"
+		local result = rewriteInstanceRequires(src, index, aliases)
+		expect(result).toBe('BT.task(require("@Game/server/behavior/tasks/randomWait"), nil, {})')
+	end)
+
+	test("path not found in index is left unchanged", function()
+		local src = "require([[@game/ServerScriptService/Missing/Module]])"
+		local result = rewriteInstanceRequires(src, {}, aliases)
+		expect(result).toBe(src)
+	end)
+
+	test("init.luau path in index strips /init suffix", function()
+		local index = { ["Foo.Bar"] = "places/game/foo/bar/init.luau" }
+		local result = rewriteInstanceRequires("require([[@game/Foo/Bar]])", index, aliases)
+		expect(result).toBe('require("@Game/foo/bar")')
+	end)
+
+	test("init.lua path in index strips /init suffix", function()
+		local index = { ["Foo.Bar"] = "places/game/foo/bar/init.lua" }
+		local result = rewriteInstanceRequires("require([[@game/Foo/Bar]])", index, aliases)
+		expect(result).toBe('require("@Game/foo/bar")')
+	end)
+
+	test("no alias match emits bare file path require", function()
+		local index = { ["Foo.Bar"] = "other/path/bar.lua" }
+		local result = rewriteInstanceRequires("require([[@game/Foo/Bar]])", index, aliases)
+		expect(result).toBe('require("other/path/bar")')
+	end)
+
+	test("multiple instance requires in one source are each rewritten", function()
+		local index = {
+			["A.X"] = "places/game/a/x.lua",
+			["B.Y"] = "places/common/b/y.lua",
+		}
+		local src = "require([[@game/A/X]]) require([[@game/B/Y]])"
+		local result = rewriteInstanceRequires(src, index, aliases)
+		expect(result).toBe('require("@Game/a/x") require("@Common/b/y")')
+	end)
+
+	test("empty index leaves source unchanged", function()
+		local src = "require([[@game/Foo/Bar]])"
+		local result = rewriteInstanceRequires(src, {}, {})
+		expect(result).toBe(src)
+	end)
 end)
