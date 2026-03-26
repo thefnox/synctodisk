@@ -536,14 +536,14 @@ local startOk, startErr = pcall(function()
 			print("[synctodisk] Client connected")
 
 			while true do
-				local msg = socket.next()
+				local msg = socket:next()
 				if msg == nil then
 					break
 				end
 
 				local decodeOk, decoded = pcall(serde.decode, "json", msg :: string)
 				if not decodeOk then
-					socket.send(encode({ type = "ack", success = false, message = "Invalid JSON" }))
+					socket:send(encode({ type = "ack", success = false, message = "Invalid JSON" }))
 					continue
 				end
 
@@ -551,7 +551,7 @@ local startOk, startErr = pcall(function()
 				local msgType = tostring(d.type or "")
 
 				if msgType == "ping" then
-					socket.send(encode({ type = "pong" }))
+					socket:send(encode({ type = "pong" }))
 				elseif msgType == "sync" then
 					local aliasList = buildAliasList(aliasesRef.value)
 					local syncMsg: SyncMessage = {
@@ -560,16 +560,16 @@ local startOk, startErr = pcall(function()
 						instanceType = tostring(d.instanceType or ""),
 					}
 					local ack = handleSync(syncMsg, indexRef.value, aliasList, config.watchedPaths)
-					socket.send(encode(ack :: { [string]: unknown }))
+					socket:send(encode(ack :: { [string]: unknown }))
 					local icon = if ack.success then "✓" else "✗"
 					print(`[synctodisk] {icon} {ack.message}`)
 				elseif msgType == "delete" then
 					local ack = handleDelete(tostring(d.dmPath or ""), indexRef.value, config.watchedPaths)
-					socket.send(encode(ack :: { [string]: unknown }))
+					socket:send(encode(ack :: { [string]: unknown }))
 					local icon = if ack.success then "✓" else "✗"
 					print(`[synctodisk] {icon} {ack.message}`)
 				elseif msgType == "disconnect" then
-					socket.send(encode({ type = "ack", success = true, message = "Bye" }))
+					socket:send(encode({ type = "ack", success = true, message = "Bye" }))
 					break
 				end
 			end
