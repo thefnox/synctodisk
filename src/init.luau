@@ -46,8 +46,6 @@ local function Style(text: string, style: stdio.Style): string
 	return `{stdio.style(style)}{text}{stdio.style("reset")}`
 end
 
-print(`{Color("synctodisk", "green")} {VERSION}`)
-
 ------------------------------------------------------------------------
 -- CLI argument parsing
 ------------------------------------------------------------------------
@@ -68,12 +66,15 @@ local function print_usage()
 	print(`\t{stdio.color("green")}-v, --version{stdio.color("reset")}\t\tPrint version information`)
 end
 
-if table.find(args, "-h") or table.find(args, "--help") then
-	print_usage()
+if table.find(args, "-v") or table.find(args, "--version") then
+	print(VERSION)
 	return
 end
 
-if table.find(args, "-v") or table.find(args, "--version") then
+print(`{Color("synctodisk", "green")} {VERSION}`)
+
+if table.find(args, "-h") or table.find(args, "--help") then
+	print_usage()
 	return
 end
 
