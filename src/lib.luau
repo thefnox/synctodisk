@@ -101,6 +101,37 @@ end
 -- File path derivation
 ------------------------------------------------------------------------
 
+-- For folder nodes that have no filePath in the sourcemap, infer their
+-- directory by finding any descendant in the index and stripping as many
+-- path components from the end of its file path as it has name segments
+-- below the ancestor (plus one extra if it is an init file).
+local function inferDirFromSiblings(ancestorPath: string, index: { [string]: string }): string?
+	local prefix = ancestorPath .. "."
+	for key, sibFile in index do
+		if key:sub(1, #prefix) == prefix then
+			local rel = key:sub(#prefix + 1)
+			local depth = 0
+			for _ in rel:gmatch("[^.]+") do
+				depth += 1
+			end
+			local extraForInit = if sibFile:match("/init%.luau?$") then 1 else 0
+			local result = sibFile
+			for _ = 1, depth + extraForInit do
+				local stripped = result:match("^(.*)/[^/]+$")
+				if not stripped then
+					result = nil :: any
+					break
+				end
+				result = stripped
+			end
+			if result then
+				return result .. "/"
+			end
+		end
+	end
+	return nil
+end
+
 local function deriveFilePath(dmPath: string, index: { [string]: string }): (string?, boolean)
 	local segments: { string } = {}
 	for seg in dmPath:gmatch("[^.]+") do
@@ -109,7 +140,7 @@ local function deriveFilePath(dmPath: string, index: { [string]: string }): (str
 
 	for i = #segments - 1, 1, -1 do
 		local ancestorPath = table.concat(segments, ".", 1, i)
-		local ancestorFile = index[ancestorPath]
+		local ancestorFile = index[ancestorPath] or inferDirFromSiblings(ancestorPath, index)
 		if ancestorFile then
 			local baseDir: string
 			if ancestorFile:match("/init%.luau?$") then

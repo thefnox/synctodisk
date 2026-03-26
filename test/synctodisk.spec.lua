@@ -395,4 +395,46 @@ describe("deriveFilePath", function()
 		expect(path).toBeNil()
 		expect(ok).toBe(false)
 	end)
+
+	-- Sibling inference: parent folder has no filePath but a sibling is in the index
+	test("infers directory from direct sibling with regular file", function()
+		-- Foo.Bar is a plain folder (not in index); Foo.Bar.existing is a sibling
+		local index = { ["Foo.Bar.existing"] = "src/Foo/Bar/existing.luau" }
+		local path, ok = deriveFilePath("Foo.Bar.newchild", index)
+		expect(ok).toBe(true)
+		expect(path).toBe("src/Foo/Bar/newchild.luau")
+	end)
+
+	test("infers directory from direct sibling with init.luau file", function()
+		local index = { ["Foo.Bar.existing"] = "src/Foo/Bar/existing/init.luau" }
+		local path, ok = deriveFilePath("Foo.Bar.newchild", index)
+		expect(ok).toBe(true)
+		expect(path).toBe("src/Foo/Bar/newchild.luau")
+	end)
+
+	test("infers directory from nested descendant sibling", function()
+		-- Only a grandchild is in the index under Foo.Bar
+		local index = { ["Foo.Bar.nested.deep"] = "src/Foo/Bar/nested/deep.luau" }
+		local path, ok = deriveFilePath("Foo.Bar.newchild", index)
+		expect(ok).toBe(true)
+		expect(path).toBe("src/Foo/Bar/newchild.luau")
+	end)
+
+	test("infers directory from nested descendant with init.luau", function()
+		local index = { ["Foo.Bar.nested.deep"] = "src/Foo/Bar/nested/deep/init.luau" }
+		local path, ok = deriveFilePath("Foo.Bar.newchild", index)
+		expect(ok).toBe(true)
+		expect(path).toBe("src/Foo/Bar/newchild.luau")
+	end)
+
+	test("reproduces the real-world case: new script under a plain folder watched path", function()
+		-- behavior.trees is a plain Folder with no filePath; only behavior.trees.test exists
+		local index = {
+			["ServerScriptService.Game_Server.behavior.trees.test"] = "places/game/server/behavior/trees/test.lua",
+		}
+		local path, ok = deriveFilePath("ServerScriptService.Game_Server.behavior.trees.Animal", index)
+		expect(ok).toBe(true)
+		expect(path).toBe("places/game/server/behavior/trees/Animal.luau")
+	end)
+
 end)
