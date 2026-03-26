@@ -4,7 +4,7 @@
 -- synctodisk: Syncs Roblox Studio ModuleScripts to disk via WebSocket + Rojo sourcemap.
 -- Run: synctodisk [CONFIG] [OPTIONS]
 --
--- Requires btree-sync.config.json in the project root (or pass a custom path).
+-- Requires sync.config.json in the project root (or pass a custom path).
 -- Minimal example:
 --   { "watchedPaths": ["ServerScriptService.MyGame.Trees"] }
 -- Full options:
@@ -28,7 +28,7 @@ local stdio = require("@lune/stdio")
 ------------------------------------------------------------------------
 
 local VERSION = (_G.VERSION or "DEBUG") :: string
-local DEFAULT_CONFIG = "btree-sync.config.json"
+local DEFAULT_CONFIG = "sync.config.json"
 
 local function Color(text: string, color: stdio.Color): string
 	return `{stdio.color(color)}{text}{stdio.color("reset")}`
@@ -51,7 +51,9 @@ local function print_usage()
 	print("\tsynctodisk [CONFIG] [OPTIONS]")
 	print("")
 	print(Color(Style("ARGUMENTS:", "bold"), "yellow"))
-	print(`\t{stdio.color("cyan")}[CONFIG]{stdio.color("reset")}\t\tPath to JSON config file (default: {DEFAULT_CONFIG})`)
+	print(
+		`\t{stdio.color("cyan")}[CONFIG]{stdio.color("reset")}\t\tPath to JSON config file (default: {DEFAULT_CONFIG})`
+	)
 	print("")
 	print(Color(Style("OPTIONS:", "bold"), "yellow"))
 	print(`\t{stdio.color("green")}-h, --help{stdio.color("reset")}\t\tPrint this help message`)
@@ -108,7 +110,7 @@ type Ack = {
 local readOk, rawOrErr = pcall(fs.readFile, configPath)
 if not readOk then
 	print(`[synctodisk] ERROR: {configPath} not found: {rawOrErr}`)
-	print("[synctodisk] Create btree-sync.config.json with at least:")
+	print("[synctodisk] Create sync.config.json with at least:")
 	print('  { "watchedPaths": ["ServerScriptService.MyGame.Trees"] }')
 	process.exit(1)
 end
@@ -258,14 +260,16 @@ local function rewriteRequires(source: string, aliasList: { AliasEntry }): strin
 		return source
 	end
 	-- Only match string requires that don't already start with @
-	return (source:gsub('require%s*%(%s*"([^@][^"]*)"', function(path: string): string
-		for _, entry in aliasList do
-			if path:sub(1, #entry.root) == entry.root then
-				return `require("@{entry.name}/{path:sub(#entry.root + 1)}")`
+	return (
+		source:gsub('require%s*%(%s*"([^@][^"]*)"', function(path: string): string
+			for _, entry in aliasList do
+				if path:sub(1, #entry.root) == entry.root then
+					return `require("@{entry.name}/{path:sub(#entry.root + 1)}")`
+				end
 			end
-		end
-		return `require("{path}")`
-	end))
+			return `require("{path}")`
+		end)
+	)
 end
 
 ------------------------------------------------------------------------
@@ -450,11 +454,7 @@ end
 -- Delete handler
 ------------------------------------------------------------------------
 
-local function handleDelete(
-	dmPath: string,
-	index: { [string]: string },
-	watched: { string }
-): Ack
+local function handleDelete(dmPath: string, index: { [string]: string }, watched: { string }): Ack
 	if not isUnderWatchedPath(dmPath, watched) then
 		return {
 			type = "ack",
@@ -552,7 +552,6 @@ local startOk, startErr = pcall(function()
 
 				if msgType == "ping" then
 					socket.send(encode({ type = "pong" }))
-
 				elseif msgType == "sync" then
 					local aliasList = buildAliasList(aliasesRef.value)
 					local syncMsg: SyncMessage = {
@@ -564,14 +563,11 @@ local startOk, startErr = pcall(function()
 					socket.send(encode(ack :: { [string]: unknown }))
 					local icon = if ack.success then "✓" else "✗"
 					print(`[synctodisk] {icon} {ack.message}`)
-
 				elseif msgType == "delete" then
-					local ack =
-						handleDelete(tostring(d.dmPath or ""), indexRef.value, config.watchedPaths)
+					local ack = handleDelete(tostring(d.dmPath or ""), indexRef.value, config.watchedPaths)
 					socket.send(encode(ack :: { [string]: unknown }))
 					local icon = if ack.success then "✓" else "✗"
 					print(`[synctodisk] {icon} {ack.message}`)
-
 				elseif msgType == "disconnect" then
 					socket.send(encode({ type = "ack", success = true, message = "Bye" }))
 					break
@@ -590,4 +586,3 @@ if not startOk then
 end
 
 print(`[synctodisk] Listening on ws://localhost:{config.port}  (Ctrl+C to stop)`)
-
