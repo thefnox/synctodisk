@@ -5,5 +5,5 @@
 
 [tools]
 lune = "filiptibell/lune@0.10.4"
-stylua = "JohnnyMorganz/StyLua@2.3.0"
-darklua = "seaofvoices/darklua@0.17.2"
+stylua = "JohnnyMorganz/StyLua@2.4.0"
+darklua = "seaofvoices/darklua@0.18.0"
