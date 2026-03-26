@@ -23,6 +23,14 @@ local serde = require("@lune/serde")
 local process = require("@lune/process")
 local stdio = require("@lune/stdio")
 
+local lib = require("@self/lib")
+local buildIndex = lib.buildIndex
+local countEntries = lib.countEntries
+local buildAliasList = lib.buildAliasList
+local rewriteRequires = lib.rewriteRequires
+local isUnderWatchedPath = lib.isUnderWatchedPath
+local deriveFilePath = lib.deriveFilePath
+
 ------------------------------------------------------------------------
 -- Version header
 ------------------------------------------------------------------------
@@ -81,21 +89,15 @@ end
 -- Types
 ------------------------------------------------------------------------
 
+type SourcemapNode = lib.SourcemapNode
+type AliasEntry = lib.AliasEntry
+
 type Config = {
 	watchedPaths: { string }, -- required: DataModel paths the tool is allowed to write under
 	port: number,
 	sourcemapPath: string,
 	luaurcPath: string,
 }
-
-type SourcemapNode = {
-	name: string,
-	className: string,
-	filePaths: { string }?,
-	children: { SourcemapNode }?,
-}
-
-type AliasEntry = { name: string, root: string }
 
 type Ack = {
 	type: string,
@@ -157,29 +159,6 @@ end
 -- Sourcemap index: DataModel path -> file path on disk
 ------------------------------------------------------------------------
 
-local function buildIndex(node: SourcemapNode, parentPath: string, index: { [string]: string })
-	-- The DataModel root node (className == "DataModel") has a project name
-	-- like "btree" that does NOT appear in Instance:GetFullName() output.
-	-- We skip its name so children map directly to service names.
-	local myPath: string
-	if node.className == "DataModel" then
-		myPath = ""
-	elseif parentPath == "" then
-		myPath = node.name
-	else
-		myPath = parentPath .. "." .. node.name
-	end
-
-	local filePaths = node.filePaths or {}
-	if #filePaths > 0 and myPath ~= "" then
-		index[myPath] = filePaths[1]
-	end
-
-	for _, child in node.children or {} do
-		buildIndex(child, myPath, index)
-	end
-end
-
 local function loadSourcemapIndex(path: string): { [string]: string }
 	local index: { [string]: string } = {}
 	local ok, raw = pcall(fs.readFile, path)
@@ -194,14 +173,6 @@ local function loadSourcemapIndex(path: string): { [string]: string }
 	end
 	buildIndex(sm :: SourcemapNode, "", index)
 	return index
-end
-
-local function countEntries(t: { [string]: string }): number
-	local n = 0
-	for _ in t do
-		n += 1
-	end
-	return n
 end
 
 ------------------------------------------------------------------------
@@ -236,42 +207,6 @@ local function loadAliases(path: string): { [string]: string }
 	return aliases
 end
 
--- Sorted longest-root-first to prevent short prefix from matching before long one.
-local function buildAliasList(aliases: { [string]: string }): { AliasEntry }
-	local list: { AliasEntry } = {}
-	for name, root in aliases do
-		table.insert(list, { name = name, root = root })
-	end
-	table.sort(list, function(a, b)
-		return #a.root > #b.root
-	end)
-	return list
-end
-
-------------------------------------------------------------------------
--- require() rewriting
--- Rewrites require("some/bare/path") -> require("@alias/...") when the
--- bare path starts with a known .luaurc alias root.
--- Leaves require(script.X), require("@alias/...") untouched.
-------------------------------------------------------------------------
-
-local function rewriteRequires(source: string, aliasList: { AliasEntry }): string
-	if #aliasList == 0 then
-		return source
-	end
-	-- Only match string requires that don't already start with @
-	return (
-		source:gsub('require%s*%(%s*"([^@][^"]*)"', function(path: string): string
-			for _, entry in aliasList do
-				if path:sub(1, #entry.root) == entry.root then
-					return `require("@{entry.name}/{path:sub(#entry.root + 1)}")`
-				end
-			end
-			return `require("{path}")`
-		end)
-	)
-end
-
 ------------------------------------------------------------------------
 -- Filesystem helpers
 ------------------------------------------------------------------------
@@ -300,72 +235,6 @@ type SyncMessage = {
 	source: string?,
 	instanceType: string,
 }
-
--- Returns true if dmPath equals a watched path or is a descendant of one.
-local function isUnderWatchedPath(dmPath: string, watched: { string }): boolean
-	for _, watchedEntry in watched do
-		if dmPath == watchedEntry or dmPath:sub(1, #watchedEntry + 1) == watchedEntry .. "." then
-			return true
-		end
-	end
-	return false
-end
-
-------------------------------------------------------------------------
--- Path derivation for instances not yet in the sourcemap
--- (e.g. a task module created in Studio before sourcemap:watch catches up)
-------------------------------------------------------------------------
-
--- Walks up the DataModel path hierarchy to find the nearest ancestor that IS
--- in the sourcemap, then extends its file path with the remaining name segments.
--- Returns the derived file path and true, or nil and false if not possible.
-local function deriveFilePath(dmPath: string, index: { [string]: string }): (string?, boolean)
-	local segments: { string } = {}
-	for seg in dmPath:gmatch("[^.]+") do
-		table.insert(segments, seg)
-	end
-
-	for i = #segments - 1, 1, -1 do
-		local ancestorPath = table.concat(segments, ".", 1, i)
-		local ancestorFile = index[ancestorPath]
-		if ancestorFile then
-			-- Determine the base directory where children of this ancestor live.
-			local baseDir: string
-			if ancestorFile:match("/init%.luau?$") then
-				-- Folder-style module: src/foo/init.luau → children at src/foo/
-				baseDir = ancestorFile:match("^(.*)/init%.luau?$") :: string
-			elseif ancestorFile:match("%.luau?$") then
-				-- Single-file module: src/foo.luau → children would go in src/foo/
-				-- (Rojo will eventually promote foo.luau → foo/init.luau automatically
-				-- once it sees a sibling file; we write optimistically here.)
-				baseDir = ancestorFile:match("^(.-)%.luau?$") :: string
-			else
-				-- Plain directory entry
-				baseDir = ancestorFile:gsub("/$", "")
-			end
-
-			-- Append any intermediate path segments as subdirectories, final segment as .luau
-			local remaining: { string } = {}
-			for j = i + 1, #segments do
-				table.insert(remaining, segments[j])
-			end
-
-			local derived = baseDir
-			for j = 1, #remaining - 1 do
-				derived ..= "/" .. remaining[j]
-			end
-			derived ..= "/" .. remaining[#remaining] .. ".luau"
-
-			return derived, true
-		end
-	end
-
-	return nil, false
-end
-
-------------------------------------------------------------------------
--- Sync handler
-------------------------------------------------------------------------
 
 local function handleSync(
 	msg: SyncMessage,
