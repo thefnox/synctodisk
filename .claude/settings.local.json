@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:zune.sh)",
+      "WebSearch",
+      "Bash(zune test:*)",
+      "Bash(gh release:*)"
+    ]
+  }
+}
