@@ -244,17 +244,13 @@ local function handleSync(
 	index: { [string]: string },
 	aliasList: { AliasEntry },
 	watched: { string }
-): Ack
+): Ack?
 	local dmPath = msg.dmPath or ""
 	local instanceType = msg.instanceType or ""
 	local source = msg.source or ""
 
 	if not isUnderWatchedPath(dmPath, watched) then
-		return {
-			type = "ack",
-			success = false,
-			message = `Blocked: '{dmPath}' is not under a watched path`,
-		}
+		return nil
 	end
 
 	if instanceType ~= "ModuleScript" and instanceType ~= "Folder" then
@@ -447,9 +443,11 @@ local startOk, startErr = pcall(function()
 						instanceType = tostring(d.instanceType or ""),
 					}
 					local ack = handleSync(syncMsg, indexRef.value, aliasList, config.watchedPaths)
-					socket:send(encode(ack :: { [string]: unknown }))
-					local icon = if ack.success then "✓" else "✗"
-					print(`[synctodisk] {icon} {ack.message}`)
+					if ack then
+						socket:send(encode(ack :: { [string]: unknown }))
+						local icon = if ack.success then "✓" else "✗"
+						print(`[synctodisk] {icon} {ack.message}`)
+					end
 				elseif msgType == "delete" then
 					local ack = handleDelete(tostring(d.dmPath or ""), indexRef.value, config.watchedPaths)
 					socket:send(encode(ack :: { [string]: unknown }))

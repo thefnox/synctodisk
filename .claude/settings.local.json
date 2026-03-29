@@ -4,7 +4,9 @@
       "WebFetch(domain:zune.sh)",
       "WebSearch",
       "Bash(zune test:*)",
-      "Bash(gh release:*)"
+      "Bash(gh release:*)",
+      "Bash(darklua process:*)",
+      "Bash(rm -f release/synctodisk.luau)"
     ]
   }
 }
