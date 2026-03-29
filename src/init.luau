@@ -337,13 +337,9 @@ end
 -- Delete handler
 ------------------------------------------------------------------------
 
-local function handleDelete(dmPath: string, index: { [string]: string }, watched: { string }): Ack
+local function handleDelete(dmPath: string, index: { [string]: string }, watched: { string }): Ack?
 	if not isUnderWatchedPath(dmPath, watched) then
-		return {
-			type = "ack",
-			success = false,
-			message = `Blocked: '{dmPath}' is not under a watched path`,
-		}
+		return nil
 	end
 
 	-- Prefer the sourcemap entry; fall back to derivation for files that were
@@ -450,9 +446,11 @@ local startOk, startErr = pcall(function()
 					end
 				elseif msgType == "delete" then
 					local ack = handleDelete(tostring(d.dmPath or ""), indexRef.value, config.watchedPaths)
-					socket:send(encode(ack :: { [string]: unknown }))
-					local icon = if ack.success then "✓" else "✗"
-					print(`[synctodisk] {icon} {ack.message}`)
+					if ack then
+						socket:send(encode(ack :: { [string]: unknown }))
+						local icon = if ack.success then "✓" else "✗"
+						print(`[synctodisk] {icon} {ack.message}`)
+					end
 				elseif msgType == "disconnect" then
 					socket:send(encode({ type = "ack", success = true, message = "Bye" }))
 					break
