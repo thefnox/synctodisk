@@ -1,0 +1,5 @@
+release/
+.lune/packages/
+.vscode/**/*
+CLAUDE.md
+.claude/

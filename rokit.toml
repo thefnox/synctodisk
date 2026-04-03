@@ -1,0 +1,10 @@
+# This file lists tools managed by Rokit, a toolchain manager for Roblox projects.
+# For more information, see https://github.com/rojo-rbx/rokit
+
+# New tools can be added by running `rokit add <tool>` in a terminal.
+
+[tools]
+lune = "filiptibell/lune@0.10.4"
+stylua = "JohnnyMorganz/StyLua@2.4.0"
+darklua = "seaofvoices/darklua@0.18.0"
+zune = "Scythe-Technology/zune@0.5.4"
