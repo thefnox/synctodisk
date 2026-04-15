@@ -198,32 +198,47 @@ end
 -- extension (and /init suffix), then applies alias rewriting identical
 -- to rewriteRequires.  Leaves the call unchanged if the path is not
 -- found in the index.
+local function resolveInstancePath(
+	instancePath: string,
+	index: { [string]: string },
+	aliasList: { AliasEntry }
+): string?
+	local dmPath = instancePath:gsub("/", ".")
+	local filePath = index[dmPath]
+	if not filePath then
+		return nil
+	end
+	local requirePath = filePath:match("^(.*)/init%.luau?$")
+		or filePath:match("^(.-)%.luau?$")
+		or filePath
+	for _, entry in aliasList do
+		if requirePath:sub(1, #entry.root) == entry.root then
+			return `require("@{entry.name}/{requirePath:sub(#entry.root + 1)}")`
+		end
+	end
+	return `require("{requirePath}")`
+end
+
 local function rewriteInstanceRequires(
 	source: string,
 	index: { [string]: string },
 	aliasList: { AliasEntry }
 ): string
-	return source:gsub(
+	local result = source:gsub(
 		"require%s*%(%s*%[%[@game/([^%]]+)%]%]%s*%)",
 		function(instancePath: string): string
-			local dmPath = instancePath:gsub("/", ".")
-			local filePath = index[dmPath]
-			if not filePath then
-				return `require([[@game/{instancePath}]])`
-			end
-			-- Strip /init suffix and file extension to get the require path
-			local requirePath = filePath:match("^(.*)/init%.luau?$")
-				or filePath:match("^(.-)%.luau?$")
-				or filePath
-			-- Apply alias rewriting (longest root first — caller must pre-sort)
-			for _, entry in aliasList do
-				if requirePath:sub(1, #entry.root) == entry.root then
-					return `require("@{entry.name}/{requirePath:sub(#entry.root + 1)}")`
-				end
-			end
-			return `require("{requirePath}")`
+			return resolveInstancePath(instancePath, index, aliasList)
+				or `require([[@game/{instancePath}]])`
 		end
 	)
+	result = result:gsub(
+		'require%s*%(%s*"@game/([^"]+)"%s*%)',
+		function(instancePath: string): string
+			return resolveInstancePath(instancePath, index, aliasList)
+				or `require("@game/{instancePath}")`
+		end
+	)
+	return result
 end
 
 ------------------------------------------------------------------------

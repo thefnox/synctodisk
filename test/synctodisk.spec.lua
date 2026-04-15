@@ -535,4 +535,19 @@ describe("rewriteInstanceRequires", function()
 		local result = rewriteInstanceRequires(src, {}, {})
 		expect(result).toBe(src)
 	end)
+
+	test("double-quoted @game/ path is rewritten via sourcemap and alias", function()
+		-- Regression: lowercase "@game/..." in a double-quoted require() should be
+		-- resolved as a DataModel path, looked up in the sourcemap index, and
+		-- rewritten to the matching .luaurc alias — just like the [[...]] form.
+		local aliases = {
+			{ name = "Game_Server", root = "places/game/server/" },
+		}
+		local index = {
+			["ServerScriptService.gameFolder.someScript"] = "places/game/server/someScript.luau",
+		}
+		local src = 'local x = require("@game/ServerScriptService/gameFolder/someScript")'
+		local result = rewriteInstanceRequires(src, index, aliases)
+		expect(result).toBe('local x = require("@Game_Server/someScript")')
+	end)
 end)
