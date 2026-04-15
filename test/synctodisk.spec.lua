@@ -11,6 +11,7 @@ local isUnderWatchedPath = lib.isUnderWatchedPath
 local deriveFilePath = lib.deriveFilePath
 local folderPathFromFilePath = lib.folderPathFromFilePath
 local rewriteInstanceRequires = lib.rewriteInstanceRequires
+local rewriteGameRequires = lib.rewriteGameRequires
 
 ------------------------------------------------------------------------
 -- buildIndex
@@ -536,18 +537,89 @@ describe("rewriteInstanceRequires", function()
 		expect(result).toBe(src)
 	end)
 
-	test("double-quoted @game/ path is rewritten via sourcemap and alias", function()
-		-- Regression: lowercase "@game/..." in a double-quoted require() should be
-		-- resolved as a DataModel path, looked up in the sourcemap index, and
-		-- rewritten to the matching .luaurc alias — just like the [[...]] form.
-		local aliases = {
-			{ name = "Game_Server", root = "places/game/server/" },
-		}
-		local index = {
-			["ServerScriptService.gameFolder.someScript"] = "places/game/server/someScript.luau",
-		}
-		local src = 'local x = require("@game/ServerScriptService/gameFolder/someScript")'
+	test("double-quoted @game/ path is not touched by rewriteInstanceRequires", function()
+		-- Double-quoted @game/... requires are handled by rewriteGameRequires, not here.
+		local aliases = { { name = "Game_Server", root = "places/game/server/" } }
+		local index = { ["ServerScriptService.gameFolder.someScript"] = "places/game/server/someScript.luau" }
+		local src = 'require("@game/ServerScriptService/gameFolder/someScript")'
 		local result = rewriteInstanceRequires(src, index, aliases)
+		expect(result).toBe(src)
+	end)
+end)
+
+------------------------------------------------------------------------
+-- rewriteGameRequires
+------------------------------------------------------------------------
+
+describe("rewriteGameRequires", function()
+	local aliases = {
+		{ name = "Game_Server", root = "places/game/server/" },
+		{ name = "Common", root = "places/common/" },
+	}
+
+	test("leaf path in index is rewritten via alias", function()
+		local index = { ["ServerScriptService.gameFolder.someScript"] = "places/game/server/someScript.luau" }
+		local src = 'local x = require("@game/ServerScriptService/gameFolder/someScript")'
+		local result = rewriteGameRequires(src, index, aliases)
 		expect(result).toBe('local x = require("@Game_Server/someScript")')
+	end)
+
+	test("ancestor folder in index resolves suffix correctly", function()
+		-- Only the container folder is indexed, not the leaf script.
+		local index = { ["ServerScriptService.gameFolder"] = "places/game/server/init.luau" }
+		local src = 'require("@game/ServerScriptService/gameFolder/someScript")'
+		local result = rewriteGameRequires(src, index, aliases)
+		expect(result).toBe('require("@Game_Server/someScript")')
+	end)
+
+	test("deeper ancestor resolves multi-segment suffix", function()
+		local index = { ["ServerScriptService.gameFolder"] = "places/game/server/init.luau" }
+		local src = 'require("@game/ServerScriptService/gameFolder/behavior/trees/Animal")'
+		local result = rewriteGameRequires(src, index, aliases)
+		expect(result).toBe('require("@Game_Server/behavior/trees/Animal")')
+	end)
+
+	test("leaf init.luau in index strips /init suffix", function()
+		local index = { ["ServerScriptService.gameFolder.subModule"] = "places/game/server/subModule/init.luau" }
+		local src = 'require("@game/ServerScriptService/gameFolder/subModule")'
+		local result = rewriteGameRequires(src, index, aliases)
+		expect(result).toBe('require("@Game_Server/subModule")')
+	end)
+
+	test("path not in index at any ancestor level is left unchanged", function()
+		local src = 'require("@game/ServerScriptService/Missing/Module")'
+		local result = rewriteGameRequires(src, {}, aliases)
+		expect(result).toBe(src)
+	end)
+
+	test("no alias match leaves path unchanged", function()
+		local index = { ["Foo.Bar"] = "other/path/bar.luau" }
+		local src = 'require("@game/Foo/Bar")'
+		local result = rewriteGameRequires(src, index, aliases)
+		expect(result).toBe(src)
+	end)
+
+	test("multiple @game requires in one source are each rewritten", function()
+		local index = {
+			["A.X"] = "places/game/server/a/x.luau",
+			["B.Y"] = "places/common/b/y.luau",
+		}
+		local src = 'require("@game/A/X") require("@game/B/Y")'
+		local result = rewriteGameRequires(src, index, aliases)
+		expect(result).toBe('require("@Game_Server/a/x") require("@Common/b/y")')
+	end)
+
+	test("[[...]] instance requires are not touched", function()
+		local index = { ["Foo.Bar"] = "places/game/server/bar.luau" }
+		local src = "require([[@game/Foo/Bar]])"
+		local result = rewriteGameRequires(src, index, aliases)
+		expect(result).toBe(src)
+	end)
+
+	test("empty aliasList leaves path unchanged", function()
+		local index = { ["Foo.Bar"] = "places/game/server/bar.luau" }
+		local src = 'require("@game/Foo/Bar")'
+		local result = rewriteGameRequires(src, index, {})
+		expect(result).toBe(src)
 	end)
 end)

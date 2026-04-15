@@ -29,6 +29,7 @@ local countEntries = lib.countEntries
 local buildAliasList = lib.buildAliasList
 local rewriteRequires = lib.rewriteRequires
 local rewriteInstanceRequires = lib.rewriteInstanceRequires
+local rewriteGameRequires = lib.rewriteGameRequires
 local isUnderWatchedPath = lib.isUnderWatchedPath
 local deriveFilePath = lib.deriveFilePath
 local folderPathFromFilePath = lib.folderPathFromFilePath
@@ -310,6 +311,7 @@ local function handleSync(
 	local rewriteLog: { string } = {}
 	local rewritten = rewriteRequires(source, aliasList, rewriteLog)
 	rewritten = rewriteInstanceRequires(rewritten, index, aliasList, rewriteLog)
+	rewritten = rewriteGameRequires(rewritten, index, aliasList, rewriteLog)
 	for _, entry in rewriteLog do
 		print(`[synctodisk]   ↪ {entry}`)
 	end

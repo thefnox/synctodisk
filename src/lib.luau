@@ -241,21 +241,96 @@ local function rewriteInstanceRequires(
 	aliasList: { AliasEntry },
 	logBuffer: { string }?
 ): string
-	local result = source:gsub(
-		"require%s*%(%s*%[%[@game/([^%]]+)%]%]%s*%)",
-		function(instancePath: string): string
-			return resolveInstancePath(instancePath, index, aliasList, logBuffer)
-				or `require([[@game/{instancePath}]])`
-		end
+	return (
+		source:gsub(
+			"require%s*%(%s*%[%[@game/([^%]]+)%]%]%s*%)",
+			function(instancePath: string): string
+				return resolveInstancePath(instancePath, index, aliasList, logBuffer)
+					or `require([[@game/{instancePath}]])`
+			end
+		)
 	)
-	result = result:gsub(
-		'require%s*%(%s*"@game/([^"]+)"%s*%)',
-		function(instancePath: string): string
-			return resolveInstancePath(instancePath, index, aliasList, logBuffer)
-				or `require("@game/{instancePath}")`
-		end
+end
+
+------------------------------------------------------------------------
+-- @game string-require alias rewriter
+------------------------------------------------------------------------
+
+-- Rewrites double-quoted @game/... requires emitted by Studio or hand-written:
+--   require("@game/ServerScriptService/GameFolder/someScript")
+-- Uses the sourcemap index to resolve the DM path to a file path, then
+-- applies alias rewriting. Tries the full leaf path first; if not indexed,
+-- walks up ancestor DM paths so container-folder entries are sufficient.
+local function rewriteGameRequires(
+	source: string,
+	index: { [string]: string },
+	aliasList: { AliasEntry },
+	logBuffer: { string }?
+): string
+	return (
+		source:gsub(
+			'require%s*%(%s*"@game/([^"]+)"%s*%)',
+			function(instancePath: string): string
+				local segments: { string } = {}
+				for seg in instancePath:gmatch("[^/]+") do
+					table.insert(segments, seg)
+				end
+				if #segments == 0 then
+					return `require("@game/{instancePath}")`
+				end
+
+				-- Helper: given a file path from the index, try to match an alias.
+				local function tryFileAlias(filePath: string, suffixSegments: { string }): string?
+					local baseDir = filePath:match("^(.*)/init%.luau?$")
+						or filePath:match("^(.-)%.luau?$")
+						or filePath:gsub("/$", "")
+					local requirePath = if #suffixSegments > 0
+						then baseDir .. "/" .. table.concat(suffixSegments, "/")
+						else baseDir
+					for _, entry in aliasList do
+						if requirePath:sub(1, #entry.root) == entry.root then
+							local suffix = requirePath:sub(#entry.root + 1)
+							if logBuffer then
+								table.insert(
+									logBuffer,
+									`require @game rewrite: "@game/{instancePath}" → "@{entry.name}/{suffix}" (alias: {entry.name})`
+								)
+							end
+							return `require("@{entry.name}/{suffix}")`
+						end
+					end
+					return nil
+				end
+
+				-- 1. Full leaf path in index (most precise).
+				local leafFile = index[table.concat(segments, ".")]
+				if leafFile then
+					local rewritten = tryFileAlias(leafFile, {})
+					if rewritten then
+						return rewritten
+					end
+				end
+
+				-- 2. Ancestor paths (longest prefix first).
+				for prefixLen = #segments - 1, 1, -1 do
+					local ancestorFile = index[table.concat(segments, ".", 1, prefixLen)]
+					if ancestorFile then
+						local remaining: { string } = {}
+						for i = prefixLen + 1, #segments do
+							table.insert(remaining, segments[i])
+						end
+						local rewritten = tryFileAlias(ancestorFile, remaining)
+						if rewritten then
+							return rewritten
+						end
+					end
+				end
+
+				-- No match: leave unchanged.
+				return `require("@game/{instancePath}")`
+			end
+		)
 	)
-	return result
 end
 
 ------------------------------------------------------------------------
@@ -266,6 +341,7 @@ return {
 	buildAliasList = buildAliasList,
 	rewriteRequires = rewriteRequires,
 	rewriteInstanceRequires = rewriteInstanceRequires,
+	rewriteGameRequires = rewriteGameRequires,
 	isUnderWatchedPath = isUnderWatchedPath,
 	deriveFilePath = deriveFilePath,
 	folderPathFromFilePath = folderPathFromFilePath,
