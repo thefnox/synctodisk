@@ -1,3 +1,4 @@
 release/
 .lune/packages/
 .vscode/**/*
+./claude/settings.local.json

@@ -307,8 +307,12 @@ local function handleSync(
 	end
 
 	-- Rewrite both file-path and instance-path requires.
-	local rewritten = rewriteRequires(source, aliasList)
-	rewritten = rewriteInstanceRequires(rewritten, index, aliasList)
+	local rewriteLog: { string } = {}
+	local rewritten = rewriteRequires(source, aliasList, rewriteLog)
+	rewritten = rewriteInstanceRequires(rewritten, index, aliasList, rewriteLog)
+	for _, entry in rewriteLog do
+		print(`[synctodisk]   ↪ {entry}`)
+	end
 	local parentDir = filePath:match("^(.*)/[^/]*$")
 	if parentDir and parentDir ~= "" then
 		local dirOk, dirErr = pcall(mkdirp, parentDir)

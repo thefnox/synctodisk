@@ -68,7 +68,11 @@ end
 -- require() rewriter
 ------------------------------------------------------------------------
 
-local function rewriteRequires(source: string, aliasList: { AliasEntry }): string
+local function rewriteRequires(
+	source: string,
+	aliasList: { AliasEntry },
+	logBuffer: { string }?
+): string
 	if #aliasList == 0 then
 		return source
 	end
@@ -76,7 +80,11 @@ local function rewriteRequires(source: string, aliasList: { AliasEntry }): strin
 		source:gsub('require%s*%(%s*"([^@][^"]*)"', function(path: string): string
 			for _, entry in aliasList do
 				if path:sub(1, #entry.root) == entry.root then
-					return `require("@{entry.name}/{path:sub(#entry.root + 1)}"`
+					local suffix = path:sub(#entry.root + 1)
+					if logBuffer then
+						table.insert(logBuffer, `require path rewrite: "{path}" → "@{entry.name}/{suffix}" (alias: {entry.name})`)
+					end
+					return `require("@{entry.name}/{suffix}"`
 				end
 			end
 			return `require("{path}"`
@@ -201,7 +209,8 @@ end
 local function resolveInstancePath(
 	instancePath: string,
 	index: { [string]: string },
-	aliasList: { AliasEntry }
+	aliasList: { AliasEntry },
+	logBuffer: { string }?
 ): string?
 	local dmPath = instancePath:gsub("/", ".")
 	local filePath = index[dmPath]
@@ -213,8 +222,15 @@ local function resolveInstancePath(
 		or filePath
 	for _, entry in aliasList do
 		if requirePath:sub(1, #entry.root) == entry.root then
-			return `require("@{entry.name}/{requirePath:sub(#entry.root + 1)}")`
+			local suffix = requirePath:sub(#entry.root + 1)
+			if logBuffer then
+				table.insert(logBuffer, `require instance rewrite: "@game/{instancePath}" → "@{entry.name}/{suffix}" (alias: {entry.name})`)
+			end
+			return `require("@{entry.name}/{suffix}")`
 		end
+	end
+	if logBuffer then
+		table.insert(logBuffer, `require instance rewrite: "@game/{instancePath}" → "{requirePath}" (no alias match)`)
 	end
 	return `require("{requirePath}")`
 end
@@ -222,19 +238,20 @@ end
 local function rewriteInstanceRequires(
 	source: string,
 	index: { [string]: string },
-	aliasList: { AliasEntry }
+	aliasList: { AliasEntry },
+	logBuffer: { string }?
 ): string
 	local result = source:gsub(
 		"require%s*%(%s*%[%[@game/([^%]]+)%]%]%s*%)",
 		function(instancePath: string): string
-			return resolveInstancePath(instancePath, index, aliasList)
+			return resolveInstancePath(instancePath, index, aliasList, logBuffer)
 				or `require([[@game/{instancePath}]])`
 		end
 	)
 	result = result:gsub(
 		'require%s*%(%s*"@game/([^"]+)"%s*%)',
 		function(instancePath: string): string
-			return resolveInstancePath(instancePath, index, aliasList)
+			return resolveInstancePath(instancePath, index, aliasList, logBuffer)
 				or `require("@game/{instancePath}")`
 		end
 	)
