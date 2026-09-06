@@ -24,6 +24,7 @@ local process = require("@lune/process")
 local stdio = require("@lune/stdio")
 
 local lib = require("@self/lib")
+local ImageSync = require("@self/imageSync")
 local buildIndex = lib.buildIndex
 local countEntries = lib.countEntries
 local buildAliasList = lib.buildAliasList
@@ -419,6 +420,7 @@ local startOk, startErr = pcall(function()
 	net.serve(config.port, {
 		handleWebSocket = function(socket)
 			print("[synctodisk] Client connected")
+			local receiveImage = ImageSync.new(if type(p.imageOutputRoot) == "string" then p.imageOutputRoot else nil)
 
 			while true do
 				local msg = socket:next()
@@ -427,7 +429,7 @@ local startOk, startErr = pcall(function()
 				end
 
 				local decodeOk, decoded = pcall(serde.decode, "json", msg :: string)
-				if not decodeOk then
+				if not decodeOk or type(decoded) ~= "table" then
 					socket:send(encode({ type = "ack", success = false, message = "Invalid JSON" }))
 					continue
 				end
@@ -437,6 +439,13 @@ local startOk, startErr = pcall(function()
 
 				if msgType == "ping" then
 					socket:send(encode({ type = "pong" }))
+				elseif
+					msgType == "image_check"
+					or msgType == "image_begin"
+					or msgType == "image_chunk"
+					or msgType == "image_end"
+				then
+					socket:send(encode(receiveImage(d)))
 				elseif msgType == "sync" then
 					local aliasList = buildAliasList(aliasesRef.value)
 					local syncMsg: SyncMessage = {
