@@ -1,5 +1,28 @@
 # synctodisk
 
+## PNG image transport
+
+Set `"imageOutputRoot": "assets/images/generated"` in the config to enable image writes relative
+to the receiver's working directory. The option is independent of script `watchedPaths` and the
+Rojo sourcemap. Omitting it disables image writes. Existing script-sync messages are unchanged.
+
+The Caravan2 Asset Icons plugin uses these WebSocket JSON messages, each acknowledged with
+`{ "type": "ack", "success": true|false, "message": "..." }`:
+
+1. `image_check`: verify that image writing is enabled.
+2. `image_begin`: `path` is an array of directory segments ending in a `.png` filename;
+   `size` is the expected total PNG byte count (maximum 2 MiB).
+3. `image_chunk`: `offset` is the cumulative decoded byte count; `data` is standard base64
+   (maximum 65,536 encoded characters per message). Chunks must arrive in order.
+4. `image_end`: validate completeness and PNG signature, create directories, then overwrite the file.
+
+One transfer is retained per connection. A new begin replaces the pending transfer; disconnecting
+discards it. Partial transfers never write files. Paths reject traversal, separators, reserved Windows
+names and invalid filename characters. The configured output root is trusted operator configuration.
+PNG data is supplied by the plugin; the receiver checks the signature, not full image validity.
+
+Run the filesystem/transfer checks with `lune run test/imageSync.luau`.
+
 A CLI tool that syncs Roblox Studio ModuleScripts to disk in real time via a WebSocket connection and a Rojo sourcemap. Built with [Lune](https://github.com/filiptibell/lune) and compiled into standalone executables.
 
 When running, `synctodisk` starts a local WebSocket server. A companion Roblox Studio plugin sends `sync` and `delete` messages as you edit behavior-tree ModuleScripts in Studio; `synctodisk` writes or removes the corresponding files on disk, keeping your Rojo project in sync.
@@ -124,4 +147,3 @@ This prompts for a new semver version string, then updates `build/.darklua.json`
 1. Run `lune run bump` and commit the version change.
 2. Create and publish a new GitHub Release with a semver tag (e.g. `v0.2.0`).
 3. The `release.yml` workflow automatically builds all platform binaries and uploads them as release assets.
-
